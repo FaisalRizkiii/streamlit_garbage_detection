@@ -2,124 +2,102 @@ import streamlit as st
 import cv2
 import tempfile
 from ultralytics import YOLO
-from PIL import Image
 import numpy as np
+import av
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 
 # --- Konfigurasi ---
-MODEL_PATH = 'best.pt'
 st.set_page_config(layout="wide", page_title="Garbage Detection")
+
+# --- Load Model ---
 @st.cache_resource
 def load_model():
+    # Make sure 'best.pt' is in your repo
     try:
-        model = YOLO(MODEL_PATH)
-        return model
+        return YOLO('best.pt')
     except Exception as e:
         st.error(f"Error loading model: {e}")
         return None
 
 model = load_model()
 
-# --- Fungsi Prediksi ---
-def predict_and_plot(image_source):
-    if model is None:
-        return np.zeros((100, 100, 3), dtype=np.uint8)
+# --- Callback untuk memproses setiap frame ---
+def video_frame_callback(frame):
+    img = frame.to_ndarray(format="bgr24")
 
-    results = model.predict(image_source, conf=0.5, verbose=False)
+    # Jika model berhasil diload, lakukan prediksi
+    if model is not None:
+        # conf=0.5: hanya deteksi jika yakin 50% ke atas
+        results = model.predict(img, conf=0.5, verbose=False)
+        annotated_frame = results[0].plot()
+    else:
+        annotated_frame = img
 
-    annotated_frame_bgr = results[0].plot()
-
-    annotated_frame_rgb = cv2.cvtColor(annotated_frame_bgr, cv2.COLOR_BGR2RGB)
-
-    return annotated_frame_rgb
+    # Kembalikan frame yang sudah digambar box ke browser
+    return av.VideoFrame.from_ndarray(annotated_frame, format="bgr24")
 
 # --- Layout Utama ---
-st.title("Aplikasi Deteksi Sampah")
+st.title("Real-Time Garbage Detection")
 
-# Sidebar Menu
-menu = ["Image", "Video", "Real-time Webcam"]
+# Sidebar
+menu = ["Image", "Video", "Live Webcam"]
 choice = st.sidebar.selectbox("Pilih Mode", menu)
 
-# ==================== MENU 1: IMAGE ====================
+# ==================== MODE 1: IMAGE ====================
 if choice == "Image":
-    st.header("Deteksi Gambar")
-    uploaded_file = st.file_uploader("Upload gambar...", type=["jpg", "png", "jpeg"])
-
+    st.header("Upload Gambar")
+    uploaded_file = st.file_uploader("", type=["jpg", "png", "jpeg"])
     if uploaded_file is not None:
-        image_pil = Image.open(uploaded_file)
+        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+        img = cv2.imdecode(file_bytes, 1)
+        
+        st.image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), caption="Original", channels="RGB")
+        
+        if model:
+            res = model.predict(img, conf=0.5)
+            res_plotted = res[0].plot()
+            st.image(cv2.cvtColor(res_plotted, cv2.COLOR_BGR2RGB), caption="Result", channels="RGB")
 
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.subheader("Gambar Asli")
-            st.image(image_pil, use_container_width=True)
-
-        with col2:
-            st.subheader("Hasil Prediksi")
-            with st.spinner('Memproses...'):
-                result_image_rgb = predict_and_plot(image_pil)
-                st.image(result_image_rgb, use_container_width=True)
-
-# ==================== MENU 2: VIDEO (LOOPING) ====================
+# ==================== MODE 2: VIDEO ====================
 elif choice == "Video":
-    st.header("Deteksi Video")
-    uploaded_video = st.file_uploader("Upload video...", type=["mp4", "mov", "avi"])
-
+    st.header("Upload Video")
+    uploaded_video = st.file_uploader("", type=["mp4", "mov", "avi"])
     if uploaded_video is not None:
         tfile = tempfile.NamedTemporaryFile(delete=False)
         tfile.write(uploaded_video.read())
-
-        stop_video_btn = st.button("Stop Video Processing")
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Video Asli")
-            original_frame_slot = st.empty() # Placeholder kiri
-        with col2:
-            st.subheader("Hasil Prediksi")
-            processed_frame_slot = st.empty() # Placeholder kanan
-
         cap = cv2.VideoCapture(tfile.name)
-
-        while cap.isOpened() and not stop_video_btn:
-            ret, frame_bgr = cap.read()
-
-            if not ret:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                continue
-
-            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            original_frame_slot.image(frame_rgb, channels="RGB", use_container_width=True)
-
-            result_frame_rgb = predict_and_plot(frame_bgr)
-            processed_frame_slot.image(result_frame_rgb, channels="RGB", use_container_width=True)
-
+        stframe = st.empty()
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret: break
+            if model:
+                res = model.predict(frame, conf=0.5, verbose=False)
+                res_plotted = res[0].plot()
+                stframe.image(cv2.cvtColor(res_plotted, cv2.COLOR_BGR2RGB), channels="RGB")
         cap.release()
 
-# ==================== MENU 3: REAL-TIME WEBCAM ====================
-elif choice == "Real-time Webcam":
-    st.header("Deteksi Video")
-    stop_webcam_btn = st.button("Stop Webcam")
+# ==================== MODE 3: LIVE WEBCAM (Real-Time) ====================
+elif choice == "Live Webcam":
+    st.header("Live Detection")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Feed Asli")
-        webcam_raw_slot = st.empty()
-    with col2:
-        st.subheader("Feed Prediksi")
-        webcam_processed_slot = st.empty()
+    # Konfigurasi agar bisa jalan di Cloud (STUN Server)
+    rtc_configuration = RTCConfiguration(
+        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    )
 
-    cap = cv2.VideoCapture(0)
-
-    while cap.isOpened() and not stop_webcam_btn:
-        ret, frame_bgr = cap.read()
-        if not ret:
-            st.error("Gagal menangkap gambar dari kamera.")
-            break
-
-        frame_rgb_raw = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        webcam_raw_slot.image(frame_rgb_raw, channels="RGB", use_container_width=True)
-        result_frame_rgb = predict_and_plot(frame_bgr)
-        webcam_processed_slot.image(result_frame_rgb, channels="RGB", use_container_width=True)
-
-    cap.release()
-    st.write("Webcam dihentikan.")
+    # Menjalankan WebRTC Streamer
+    webrtc_streamer(
+        key="garbage-detection",
+        mode=WebRtcMode.SENDRECV,
+        rtc_configuration=rtc_configuration,
+        video_frame_callback=video_frame_callback,
+        media_stream_constraints={
+            "video": {
+                # Paksa resolusi tinggi agar tidak blur
+                "width": {"min": 1280, "ideal": 1280},
+                "height": {"min": 720, "ideal": 720},
+            },
+            "audio": False,
+        },
+        async_processing=True,
+    )
