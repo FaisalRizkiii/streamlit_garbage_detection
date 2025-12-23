@@ -12,7 +12,6 @@ st.set_page_config(layout="wide", page_title="Garbage Detection")
 # --- Load Model ---
 @st.cache_resource
 def load_model():
-    # Make sure 'best.pt' is in your repo
     try:
         return YOLO('best.pt')
     except Exception as e:
@@ -25,15 +24,11 @@ model = load_model()
 def video_frame_callback(frame):
     img = frame.to_ndarray(format="bgr24")
 
-    # Jika model berhasil diload, lakukan prediksi
     if model is not None:
-        # conf=0.5: hanya deteksi jika yakin 50% ke atas
         results = model.predict(img, conf=0.5, verbose=False)
         annotated_frame = results[0].plot()
     else:
         annotated_frame = img
-
-    # Kembalikan frame yang sudah digambar box ke browser
     return av.VideoFrame.from_ndarray(annotated_frame, format="bgr24")
 
 # --- Layout Utama ---
@@ -93,9 +88,8 @@ elif choice == "Live Webcam":
         video_frame_callback=video_frame_callback,
         media_stream_constraints={
             "video": {
-                # Paksa resolusi tinggi agar tidak blur
-                "width": {"min": 1280, "ideal": 1280},
-                "height": {"min": 720, "ideal": 720},
+                "width": {"min": 640, "ideal": 640},
+                "height": {"min": 640, "ideal": 640},
             },
             "audio": False,
         },
